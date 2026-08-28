@@ -6,7 +6,7 @@ from discord.ext import commands
 from discord import app_commands
 
 # --- CONFIG ---
-TOKEN = "MTU0MjgyMjczNDg3NzI5ODc3OA.GUmh7B.VGi51bUQLoPcK7Au7qjqoM374oIuUYqO7fyzMk"
+TOKEN = "MTU0MjgyMjczNDg3NzI5ODc3OA.GnulR_.74NkYf61ubzdIdFkVZ31yo6Muq4lPteKe1BbZ4"
 ACTIVITY_CHANNEL_ID = 1542831116866551809
 
 # --- DATABÁZA ---

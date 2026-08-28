@@ -64,3 +64,4 @@ async def on_ready():
 
 # --- SPUSTENIE BOTA ---
 bot.run(os.getenv('DISCORD_TOKEN'))
+

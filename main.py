@@ -129,4 +129,4 @@ async def vyplatazam(interaction: discord.Interaction, hrac: discord.Member):
     
     await interaction.response.send_message(embed=embed)
 
-bot.run("TVOJM_BOT_TOKEN")
+bot.run("TOKEN")

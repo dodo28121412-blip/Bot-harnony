@@ -153,4 +153,4 @@ async def on_ready():
     await bot.tree.sync()
     print(f"Bot {bot.user} je online a príkazy sú synchronizované!")
 
-bot.run(TOKEN)
+bot.run("MTU0MjgyMjczNDg3NzI5ODc3OA.GnulR_.74NkYf61ubzdIdFkVZ31yo6Muq4lPteKe1BbZ4")

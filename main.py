@@ -8,6 +8,9 @@ import os
 # ---------------------------------------------------------
 # BOT SETUP & CONFIGURATION
 # ---------------------------------------------------------
+# Načítanie tokenu z prostredia na začiatku kódu
+TOKEN = os.getenv("TOKEN")
+
 intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
@@ -20,6 +23,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 conn = sqlite3.connect("databaza.db")
 cursor = conn.cursor()
 
+# Tabuľka pre aktivitu
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS activity (
     user_id INTEGER PRIMARY KEY,
@@ -28,34 +32,48 @@ CREATE TABLE IF NOT EXISTS activity (
 )
 """)
 
+# Tabuľka pre faktúry
 cursor.execute("""
-CREATE TABLE IF NOT EXISTS pay (
-    user_id INTEGER PRIMARY KEY,
-    hourly_rate REAL DEFAULT 0.0
+CREATE TABLE IF NOT EXISTS invoices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    category TEXT,
+    amount REAL,
+    created_at TEXT
 )
 """)
 
+# Tabuľka pre percentuálne nastavenie ról pre výplaty
 cursor.execute("""
-CREATE TABLE IF NOT EXISTS role_percents (
+CREATE TABLE IF NOT EXISTS role_percentages (
     role_id INTEGER PRIMARY KEY,
-    percent REAL DEFAULT 100.0
+    tuning REAL DEFAULT 0.0,
+    oprava REAL DEFAULT 0.0,
+    dot REAL DEFAULT 0.0,
+    odtah REAL DEFAULT 0.0
 )
 """)
 conn.commit()
 
 # ---------------------------------------------------------
-# UI COMPONENTS (BUTTONS & VIEWS)
+# HELPER FUNCTIONS
 # ---------------------------------------------------------
+def format_seconds(seconds: int) -> str:
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    secs = seconds % 60
+    return f"{hours}h {minutes}m {secs}s"
+
+# ---------------------------------------------------------
+# UI COMPONENTS (BUTTONS, MODALS & VIEWS)
+# ---------------------------------------------------------
+
+# 1. VIEW PRE AKTIVITU (/setup)
 class ActivityView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(
-        label="Začať aktivitu", 
-        style=discord.ButtonStyle.success, 
-        custom_id="start_act",
-        emoji="▶️"
-    )
+    @discord.ui.button(label="Začať prácu", style=discord.ButtonStyle.success, custom_id="start_act", emoji="▶️")
     async def start_activity(self, interaction: discord.Interaction, button: discord.ui.Button):
         user_id = interaction.user.id
         now_str = datetime.datetime.now().isoformat()
@@ -79,18 +97,13 @@ class ActivityView(discord.ui.View):
         conn.commit()
         
         embed = discord.Embed(
-            title="✅ Aktivita spustená",
-            description=f"Aktivita bola úspešne zaznamenaná o <t:{int(datetime.datetime.now().timestamp())}:T>.",
+            title="✅ Práca začatá",
+            description=f"Začal si pracovať o <t:{int(datetime.datetime.now().timestamp())}:T>.",
             color=discord.Color.green()
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @discord.ui.button(
-        label="Ukončiť aktivitu", 
-        style=discord.ButtonStyle.danger, 
-        custom_id="stop_act",
-        emoji="⏹️"
-    )
+    @discord.ui.button(label="Skončiť prácu", style=discord.ButtonStyle.danger, custom_id="stop_act", emoji="⏹️")
     async def stop_activity(self, interaction: discord.Interaction, button: discord.ui.Button):
         user_id = interaction.user.id
         
@@ -109,22 +122,77 @@ class ActivityView(discord.ui.View):
         start_time = datetime.datetime.fromisoformat(row[0])
         now = datetime.datetime.now()
         duration = int((now - start_time).total_seconds())
-        
         new_total = (row[1] or 0) + duration
         
         cursor.execute("UPDATE activity SET start_time = NULL, total_time = ? WHERE user_id = ?", (new_total, user_id))
         conn.commit()
         
-        hours = duration // 3600
-        minutes = (duration % 3600) // 60
-        seconds = duration % 60
-        
         embed = discord.Embed(
-            title="🛑 Aktivita ukončená",
-            description=f"Trvanie tejto relácie: **{hours}h {minutes}m {seconds}s**.",
+            title="🛑 Práca ukončená",
+            description=f"Trvanie relácie: **{format_seconds(duration)}**.\nCelkovo odpracované: **{format_seconds(new_total)}**.",
             color=discord.Color.blue()
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# 2. MODAL PRE ZADANIE SUMY FAKTÚRY
+class InvoiceModal(discord.ui.Modal):
+    def __init__(self, category: str):
+        super().__init__(title=f"Vytvoriť faktúru - {category.upper()}")
+        self.category = category
+
+        self.amount_input = discord.ui.TextInput(
+            label="Výška faktúry v €",
+            placeholder="Napríklad 500",
+            style=discord.TextStyle.short,
+            required=True
+        )
+        self.add_item(self.amount_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            amount = float(self.amount_input.value.replace(',', '.'))
+            if amount <= 0:
+                raise ValueError
+        except ValueError:
+            await interaction.response.send_message("Zadaj platné číslo vyššie ako 0!", ephemeral=True)
+            return
+
+        now_str = datetime.datetime.now().isoformat()
+        cursor.execute("INSERT INTO invoices (user_id, category, amount, created_at) VALUES (?, ?, ?, ?)",
+                       (interaction.user.id, self.category, amount, now_str))
+        conn.commit()
+
+        embed = discord.Embed(
+            title="🧾 Faktúra uložená",
+            description=f"Kategória: **{self.category.capitalize()}**\nSuma: **{amount:.2f} €**",
+            color=discord.Color.green()
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# 3. SELECT MENU A VIEW PRE FAKTÚRY (/setup2)
+class InvoiceSelect(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(label="Tuning", value="tuning", emoji="🔧"),
+            discord.SelectOption(label="Oprava", value="oprava", emoji="🛠️"),
+            discord.SelectOption(label="DOT", value="dot", emoji="📋"),
+            discord.SelectOption(label="Odtah", value="odtah", emoji="🚛"),
+        ]
+        super().__init__(placeholder="Vyber kategóriu faktúry...", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        category = self.values[0]
+        await interaction.response.send_modal(InvoiceModal(category))
+
+class InvoiceView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Faktúry", style=discord.ButtonStyle.primary, custom_id="invoice_btn", emoji="🧾")
+    async def invoice_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        view = discord.ui.View()
+        view.add_item(InvoiceSelect())
+        await interaction.response.send_message("Vyber kategóriu faktúry:", view=view, ephemeral=True)
 
 # ---------------------------------------------------------
 # BOT EVENTS
@@ -132,9 +200,10 @@ class ActivityView(discord.ui.View):
 @bot.event
 async def on_ready():
     bot.add_view(ActivityView())
+    bot.add_view(InvoiceView())
     try:
         synced = await bot.tree.sync()
-        print(f"Synchronizovaných {len(synced)} aplikovaných (slash) príkazy.")
+        print(f"Synchronizovaných {len(synced)} aplikovaných (slash) príkazov.")
     except Exception as e:
         print(f"Chyba pri synchronizácii príkazov: {e}")
         
@@ -144,168 +213,244 @@ async def on_ready():
 # SLASH COMMANDS
 # ---------------------------------------------------------
 
-# 1. PANEL PRÍKAZ
-@bot.tree.command(name="panel", description="Odošle hlavný panel pre správy aktivity")
+# --- AKTIVITA PRÍKAZY ---
+
+@bot.tree.command(name="setup", description="Odošle panel pre správu aktivity (začať/skončiť prácu)")
 @app_commands.checks.has_permissions(administrator=True)
-async def panel(interaction: discord.Interaction):
+async def setup(interaction: discord.Interaction):
     embed = discord.Embed(
         title="💼 Systém Sledovania Aktivity",
         description="Kliknutím na tlačidlá nižšie spravuješ svoj odpracovaný čas v službe.\n\n"
-                    "▶️ **Začať aktivitu:** Spustí počítanie času.\n"
-                    "⏹️ **Ukončiť aktivitu:** Zastaví počítanie a pripočíta čas k tvojmu profilu.",
+                    "▶️ **Začať prácu:** Spustí počítanie času.\n"
+                    "⏹️ **Skončiť prácu:** Zastaví počítanie a pripočíta čas do databázy.",
         color=discord.Color.dark_blue()
     )
-    embed.set_footer(text="Systém správy zamestnancov")
     await interaction.channel.send(embed=embed, view=ActivityView())
-    await interaction.response.send_message("Panel bol úspešne odoslaný!", ephemeral=True)
+    await interaction.response.send_message("Panel pre aktivitu bol odoslaný!", ephemeral=True)
 
-# 2. NASTAVENIE MZDY
-@bot.tree.command(name="nastavitvyplatu", description="Nastaví základnú hodinovú mzdu pre používateľa")
-@app_commands.checks.has_permissions(administrator=True)
-async def nastavitvyplatu(interaction: discord.Interaction, uzivatel: discord.Member, mzda: float):
-    if mzda < 0:
-        await interaction.response.send_message("Mzda nemôže byť záporná!", ephemeral=True)
-        return
-
-    cursor.execute("INSERT OR REPLACE INTO pay (user_id, hourly_rate) VALUES (?, ?)", (uzivatel.id, mzda))
-    conn.commit()
-    
-    embed = discord.Embed(
-        title="💰 Mzda Nastavená",
-        description=f"Základná hodinová mzda pre {uzivatel.mention} bola nastavená na **{mzda:.2f} €/hod**.",
-        color=discord.Color.green()
-    )
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-# 3. NASTAVENIE PERCENT ROLE
-@bot.tree.command(name="nastavitpercentarole", description="Nastaví percento výplaty pre konkrétnu rolu")
-@app_commands.checks.has_permissions(administrator=True)
-async def nastavitpercentarole(interaction: discord.Interaction, rola: discord.Role, percento: float):
-    if percento < 0:
-        await interaction.response.send_message("Percento nemôže byť záporné!", ephemeral=True)
-        return
-
-    cursor.execute("INSERT OR REPLACE INTO role_percents (role_id, percent) VALUES (?, ?)", (rola.id, percento))
-    conn.commit()
-    
-    embed = discord.Embed(
-        title="📊 Percento Role Nastavené",
-        description=f"Rola {rola.mention} má odteraz nastavené násobenie výplaty na **{percento}%**.",
-        color=discord.Color.purple()
-    )
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-# 4. ZOBRAZENIE PERCENT VŠETKÝCH RÓL
-@bot.tree.command(name="zoznamporcent", description="Zobrazí zoznam všetkých nastavených percent pre role")
-@app_commands.checks.has_permissions(administrator=True)
-async def zoznamporcent(interaction: discord.Interaction):
-    cursor.execute("SELECT role_id, percent FROM role_percents")
-    rows = cursor.fetchall()
-    
-    if not rows:
-        await interaction.response.send_message("Nenašli sa žiadne nastavené percentá ról.", ephemeral=True)
-        return
-        
-    embed = discord.Embed(title="📋 Prehľad percent ról", color=discord.Color.blue())
-    for role_id, percent in rows:
-        role = interaction.guild.get_role(role_id)
-        role_name = role.name if role else f"Neznáma rola ({role_id})"
-        embed.add_field(name=role_name, value=f"{percent}%", inline=False)
-        
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-# 5. VÝPOČET VÝPLATY PRE ZAMESTNANCA
-@bot.tree.command(name="vyplatazam", description="Zobrazí podrobný výpočet výplaty pre konkrétneho zamestnanca")
-async def vyplatazam(interaction: discord.Interaction, hrac: discord.Member):
-    user_id = hrac.id
-    
-    cursor.execute("SELECT total_time FROM activity WHERE user_id = ?", (user_id,))
-    act_row = cursor.fetchone()
-    total_seconds = act_row[0] if act_row and act_row[0] else 0
-
-    cursor.execute("SELECT hourly_rate FROM pay WHERE user_id = ?", (user_id,))
-    pay_row = cursor.fetchone()
-    rate = pay_row[0] if pay_row and pay_row[0] else 0.0
-
-    user_role_ids = [role.id for role in hrac.roles]
-    percent = 100.0
-    applied_role_name = "Základná (Bez špeciálnej role)"
-
-    if user_role_ids:
-        placeholders = ','.join('?' for _ in user_role_ids)
-        cursor.execute(f"SELECT role_id, percent FROM role_percents WHERE role_id IN ({placeholders}) ORDER BY percent DESC", user_role_ids)
-        best_role = cursor.fetchone()
-        if best_role:
-            role_obj = interaction.guild.get_role(best_role[0])
-            if role_obj:
-                applied_role_name = role_obj.name
-            percent = best_role[1]
-
-    hours = total_seconds / 3600
-    base_pay = hours * rate
-    final_pay = base_pay * (percent / 100.0)
-
-    formatted_hours = int(hours)
-    formatted_minutes = int((total_seconds % 3600) // 60)
-
-    embed = discord.Embed(title=f"💳 Výplatná Páska: {hrac.display_name}", color=discord.Color.gold())
-    embed.set_thumbnail(url=hrac.display_avatar.url)
-    embed.add_field(name="⏱️ Odpracovaný čas", value=f"{formatted_hours} hod. {formatted_minutes} min.", inline=False)
-    embed.add_field(name="💵 Základná mzda", value=f"{rate:.2f} €/hod", inline=True)
-    embed.add_field(name="🏷️ Aplikovaná rola", value=f"{applied_role_name} ({percent}%)", inline=True)
-    embed.add_field(name="💶 Finálna výplata", value=f"**{final_pay:.2f} €**", inline=False)
-    
-    await interaction.response.send_message(embed=embed)
-
-# 6. MOJA AKTIVITA (PRE HRÁČA)
 @bot.tree.command(name="mojaaktivita", description="Zobrazí tvoju odpracovanú aktivitu")
 async def mojaaktivita(interaction: discord.Interaction):
     cursor.execute("SELECT start_time, total_time FROM activity WHERE user_id = ?", (interaction.user.id,))
     row = cursor.fetchone()
     
-    total_seconds = row[1] if row and row[1] else 0
-    is_active = row and row[0] is not None
-    
-    hours = total_seconds // 3600
-    minutes = (total_seconds % 3600) // 60
-    
-    status_str = "🟢 Práve v službe" if is_active else "🔴 Mimo služby"
-    
-    embed = discord.Embed(title=f"📊 Aktivita používateľa {interaction.user.display_name}", color=discord.Color.blue())
-    embed.add_field(name="Stav", value=status_str, inline=False)
-    embed.add_field(name="Odpracovaný čas", value=f"{hours} hodín a {minutes} minút", inline=False)
-    
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    total = row[1] if row and row[1] else 0
+    if row and row[0]:
+        start = datetime.datetime.fromisoformat(row[0])
+        total += int((datetime.datetime.now() - start).total_seconds())
 
-# 7. RESET ČASU JEDNÉHO HRÁČA
-@bot.tree.command(name="resetcasu", description="Vynuluje odpracovaný čas pre konkrétneho hráča")
-@app_commands.checks.has_permissions(administrator=True)
-async def resetcasu(interaction: discord.Interaction, uzivatel: discord.Member):
-    cursor.execute("UPDATE activity SET total_time = 0 WHERE user_id = ?", (uzivatel.id,))
-    conn.commit()
-    
     embed = discord.Embed(
-        title="🔄 Čas Vynulovaný",
-        description=f"Odpracovaný čas pre {uzivatel.mention} bol úspešne resetovaný na 0.",
-        color=discord.Color.orange()
+        title=f"📊 Aktivita používateľa {interaction.user.display_name}",
+        description=f"Celkový odpracovaný čas: **{format_seconds(total)}**",
+        color=discord.Color.blue()
     )
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# 8. RESET ČASU VŠETKÝCH HRÁČOV
-@bot.tree.command(name="resetvsetkych", description="Vynuluje odpracovaný čas pre VŠETKÝCH hráčov")
+@bot.tree.command(name="aktivitazam", description="Zobrazí aktivitu všetkých zamestnancov")
 @app_commands.checks.has_permissions(administrator=True)
-async def resetvsetkych(interaction: discord.Interaction):
-    cursor.execute("UPDATE activity SET total_time = 0")
-    conn.commit()
+async def aktivitazam(interaction: discord.Interaction):
+    cursor.execute("SELECT user_id, start_time, total_time FROM activity")
+    rows = cursor.fetchall()
     
+    if not rows:
+        await interaction.response.send_message("Žiadne záznamy o aktivite.", ephemeral=True)
+        return
+
+    embed = discord.Embed(title="📋 Aktivita všetkých zamestnancov", color=discord.Color.blue())
+    for u_id, start_str, total in rows:
+        user = interaction.guild.get_member(u_id)
+        name = user.display_name if user else f"ID: {u_id}"
+        t = total or 0
+        if start_str:
+            t += int((datetime.datetime.now() - datetime.datetime.fromisoformat(start_str)).total_seconds())
+        embed.add_field(name=name, value=format_seconds(t), inline=False)
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="aktivitazam1", description="Zobrazí aktivitu konkrétneho zamestnanca")
+@app_commands.checks.has_permissions(administrator=True)
+async def aktivitazam1(interaction: discord.Interaction, meno: discord.Member):
+    cursor.execute("SELECT start_time, total_time FROM activity WHERE user_id = ?", (meno.id,))
+    row = cursor.fetchone()
+    
+    total = row[1] if row and row[1] else 0
+    if row and row[0]:
+        total += int((datetime.datetime.now() - datetime.datetime.fromisoformat(row[0])).total_seconds())
+
     embed = discord.Embed(
-        title="⚠️ Hromadný Reset",
-        description="Odpracovaný čas bol úspešne vynulovaný pre **všetkých** používateľov v databáze!",
-        color=discord.Color.red()
+        title=f"📊 Aktivita - {meno.display_name}",
+        description=f"Odpracovaný čas: **{format_seconds(total)}**",
+        color=discord.Color.blue()
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="zmazataktivita", description="Odobere zamestnancovi nastavený počet minút z aktivity")
+@app_commands.checks.has_permissions(administrator=True)
+async def zmazataktivita(interaction: discord.Interaction, meno: discord.Member, minute: int):
+    cursor.execute("SELECT total_time FROM activity WHERE user_id = ?", (meno.id,))
+    row = cursor.fetchone()
+    
+    if not row:
+        await interaction.response.send_message("Používateľ nemá žiadne záznamy.", ephemeral=True)
+        return
+
+    new_total = max(0, (row[0] or 0) - (minute * 60))
+    cursor.execute("UPDATE activity SET total_time = ? WHERE user_id = ?", (new_total, meno.id))
+    conn.commit()
+
+    await interaction.response.send_message(f"Používateľovi {meno.mention} bolo odebraných {minute} minút. Nový čas: **{format_seconds(new_total)}**", ephemeral=True)
+
+@bot.tree.command(name="resetaktivita", description="Odstráni odpracované hodiny všetkým zamestnancom")
+@app_commands.checks.has_permissions(administrator=True)
+async def resetaktivita(interaction: discord.Interaction):
+    cursor.execute("UPDATE activity SET total_time = 0, start_time = NULL")
+    conn.commit()
+    await interaction.response.send_message("Všetkým používateľom bola vymazaná aktivita!", ephemeral=True)
+
+
+# --- FAKTÚRY A VÝPLATY PRÍKAZY ---
+
+@bot.tree.command(name="setup2", description="Odošle panel pre vystavovanie faktúr")
+@app_commands.checks.has_permissions(administrator=True)
+async def setup2(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="🧾 Systém Faktúr",
+        description="Klikni na tlačidlo nižšie pre výber kategórie a vystavenie faktúry.",
+        color=discord.Color.gold()
+    )
+    await interaction.channel.send(embed=embed, view=InvoiceView())
+    await interaction.response.send_message("Panel pre faktúry bol odoslaný!", ephemeral=True)
+
+@bot.tree.command(name="fakturyzam", description="Zobrazí všetky vystavené faktúry")
+@app_commands.checks.has_permissions(administrator=True)
+async def fakturyzam(interaction: discord.Interaction):
+    cursor.execute("SELECT user_id, category, amount FROM invoices ORDER BY id DESC LIMIT 25")
+    rows = cursor.fetchall()
+    
+    if not rows:
+        await interaction.response.send_message("Nenašli sa žiadne faktúry.", ephemeral=True)
+        return
+
+    embed = discord.Embed(title="📋 Všetky faktúry (posledných 25)", color=discord.Color.gold())
+    for u_id, cat, amt in rows:
+        user = interaction.guild.get_member(u_id)
+        name = user.display_name if user else f"ID: {u_id}"
+        embed.add_field(name=f"{name} - {cat.capitalize()}", value=f"{amt:.2f} €", inline=False)
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="fakturyzam1", description="Zobrazí faktúry konkrétneho zamestnanca")
+@app_commands.checks.has_permissions(administrator=True)
+async def fakturyzam1(interaction: discord.Interaction, meno: discord.Member):
+    cursor.execute("SELECT category, amount FROM invoices WHERE user_id = ?", (meno.id,))
+    rows = cursor.fetchall()
+
+    if not rows:
+        await interaction.response.send_message(f"Používateľ {meno.display_name} nemá žiadne faktúry.", ephemeral=True)
+        return
+
+    embed = discord.Embed(title=f"🧾 Faktúry - {meno.display_name}", color=discord.Color.gold())
+    total = 0
+    for cat, amt in rows:
+        embed.add_field(name=cat.capitalize(), value=f"{amt:.2f} €", inline=True)
+        total += amt
+    embed.description = f"Celkový súčet faktúr: **{total:.2f} €**"
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="vyplataper", description="Nastaví percentuálnu časť výplaty z kategórií pre konkrétnu rolu")
+@app_commands.checks.has_permissions(administrator=True)
+async def vyplataper(interaction: discord.Interaction, rola: discord.Role, tuning: float, oprava: float, dot: float, odtah: float):
+    cursor.execute("""
+    INSERT OR REPLACE INTO role_percentages (role_id, tuning, oprava, dot, odtah)
+    VALUES (?, ?, ?, ?, ?)
+    """, (rola.id, tuning, oprava, dot, odtah))
+    conn.commit()
+
+    embed = discord.Embed(
+        title="📊 Percentá Role Nastavené",
+        description=f"Pre rolu {rola.mention} boli nastavené percentá:\n"
+                    f"• **Tuning:** {tuning}%\n"
+                    f"• **Oprava:** {oprava}%\n"
+                    f"• **DOT:** {dot}%\n"
+                    f"• **Odtah:** {odtah}%",
+        color=discord.Color.purple()
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# Pomocná funkcia pre výpočet výplaty jedného zamestnanca
+def compute_payroll(member: discord.Member):
+    cursor.execute("SELECT category, SUM(amount) FROM invoices WHERE user_id = ? GROUP BY category", (member.id,))
+    inv_rows = cursor.fetchall()
+    totals = {cat: 0.0 for cat in ['tuning', 'oprava', 'dot', 'odtah']}
+    for cat, sum_amt in inv_rows:
+        if cat in totals:
+            totals[cat] = sum_amt or 0.0
+
+    # Vyhľadanie najlepšieho percenta z používateľových ról
+    user_role_ids = [r.id for r in member.roles]
+    percents = {'tuning': 0.0, 'oprava': 0.0, 'dot': 0.0, 'odtah': 0.0}
+
+    if user_role_ids:
+        placeholders = ','.join('?' for _ in user_role_ids)
+        cursor.execute(f"SELECT tuning, oprava, dot, odtah FROM role_percentages WHERE role_id IN ({placeholders})", user_role_ids)
+        roles_data = cursor.fetchall()
+        for r_tun, r_opr, r_dot, r_odt in roles_data:
+            percents['tuning'] = max(percents['tuning'], r_tun)
+            percents['oprava'] = max(percents['oprava'], r_opr)
+            percents['dot'] = max(percents['dot'], r_dot)
+            percents['odtah'] = max(percents['odtah'], r_odt)
+
+    total_payout = 0.0
+    breakdown = []
+    for cat in ['tuning', 'oprava', 'dot', 'odtah']:
+        earned = totals[cat] * (percents[cat] / 100.0)
+        total_payout += earned
+        breakdown.append(f"• **{cat.capitalize()}**: Faktúry {totals[cat]:.2f} € ({percents[cat]}%) ➔ **{earned:.2f} €**")
+
+    return total_payout, "\n".join(breakdown)
+
+@bot.tree.command(name="vyplata", description="Zobrazí predbežný výpočet tvojej výplaty")
+async def vyplata(interaction: discord.Interaction):
+    total, breakdown = compute_payroll(interaction.user)
+    embed = discord.Embed(
+        title=f"💳 Výplata pre {interaction.user.display_name}",
+        description=f"{breakdown}\n\n**Celková výplata: {total:.2f} €**",
+        color=discord.Color.green()
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="vyplatazam", description="Zobrazí výplatu všetkých zamestnancov")
+@app_commands.checks.has_permissions(administrator=True)
+async def vyplatazam(interaction: discord.Interaction):
+    cursor.execute("SELECT DISTINCT user_id FROM invoices")
+    users = cursor.fetchall()
+
+    if not users:
+        await interaction.response.send_message("Žiadne faktúry pre výpočet výplat.", ephemeral=True)
+        return
+
+    embed = discord.Embed(title="💳 Výplaty všetkých zamestnancov", color=discord.Color.green())
+    for (u_id,) in users:
+        member = interaction.guild.get_member(u_id)
+        if member:
+            total, _ = compute_payroll(member)
+            embed.add_field(name=member.display_name, value=f"**{total:.2f} €**", inline=False)
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="vyplatazam1", description="Zobrazí výplatu konkrétneho zamestnanca")
+@app_commands.checks.has_permissions(administrator=True)
+async def vyplatazam1(interaction: discord.Interaction, meno: discord.Member):
+    total, breakdown = compute_payroll(meno)
+    embed = discord.Embed(
+        title=f"💳 Výplata pre {meno.display_name}",
+        description=f"{breakdown}\n\n**Celková výplata: {total:.2f} €**",
+        color=discord.Color.green()
     )
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # ---------------------------------------------------------
 # RUN BOT VIA ENVIRONMENT VARIABLE
 # ---------------------------------------------------------
-bot.run(os.getenv("TOKEN"))
+# Spustenie bota pomocou premennej TOKEN načítanej na začiatku
+bot.run(TOKEN)

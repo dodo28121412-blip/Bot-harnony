@@ -307,6 +307,20 @@ async def resetaktivita(interaction: discord.Interaction):
     await interaction.response.send_message("Všetkým používateľom bola vymazaná aktivita!", ephemeral=True)
 
 
+# --- PRIDANÉ: RESET VŠETKÝCH FAKTÚR ---
+
+@bot.tree.command(name="reset", description="Vymaže všetky vystavené faktúry")
+@app_commands.checks.has_permissions(administrator=True)
+async def reset(interaction: discord.Interaction):
+    cursor.execute("DELETE FROM invoices")
+    conn.commit()
+
+    await interaction.response.send_message(
+        "🗑️ Všetky faktúry boli úspešne vymazané!",
+        ephemeral=True
+    )
+
+
 # --- FAKTÚRY A VÝPLATY PRÍKAZY ---
 
 @bot.tree.command(name="setup2", description="Odošle panel pre vystavovanie faktúr")
